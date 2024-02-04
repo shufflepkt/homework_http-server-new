@@ -1,29 +1,18 @@
 package ru.netology;
 
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.net.ServerSocket;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class Server {
-    private int port;
     private static final int NUMBER_OF_THREADS = 64;
 
-    private final List<String> validPaths = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js");
+    private final ConcurrentHashMap<String, ConcurrentHashMap<String, Handler>> handlers = new ConcurrentHashMap<>();
 
-
-    public Server(int port) {
-        this.port = port;
-    }
-
-    public void listen() {
+    public void listen(int port) {
         ExecutorService threadPool = Executors.newFixedThreadPool(NUMBER_OF_THREADS);
 
         try (final var serverSocket = new ServerSocket(port)) {
@@ -33,7 +22,7 @@ public class Server {
                 threadPool.execute(() -> {
                     try (
                             socket;
-                            final var in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                            final var in = socket.getInputStream();
                             final var out = new BufferedOutputStream(socket.getOutputStream());
                     ) {
                         connectionHandler(in, out);
@@ -47,57 +36,72 @@ public class Server {
         }
     }
 
-    private void connectionHandler(BufferedReader in, BufferedOutputStream out) throws IOException {
-        final var requestLine = in.readLine();
-        final var parts = requestLine.split(" ");
+    public void addHandler(String requestMethod, String path, Handler handler) {
+        if (!handlers.containsKey(requestMethod)) {
+            handlers.put(requestMethod, new ConcurrentHashMap<>());
+        }
+        handlers.get(requestMethod).putIfAbsent(path, handler);
+    }
 
-        if (parts.length != 3) {
+    private void connectionHandler(InputStream in, BufferedOutputStream out) throws IOException {
+        Request request = new Request();
+        try {
+            request.parse(in);
+        } catch (BadRequestException e) {
+            sendMsg(out, compose400BadRequest());
             return;
         }
 
-        final var path = parts[1];
-        if (!validPaths.contains(path)) {
-            out.write((
-                    "HTTP/1.1 404 Not Found\r\n" +
-                            "Content-Length: 0\r\n" +
-                            "Connection: close\r\n" +
-                            "\r\n"
-            ).getBytes());
-            out.flush();
+        if (handlers.containsKey(request.getRequestMethod())) {
+            ConcurrentHashMap<String, Handler> pathAndHandler = handlers.get(request.getRequestMethod());
+            if (pathAndHandler.containsKey(request.getPath())) {
+                pathAndHandler.get(request.getPath()).handle(request, out);
+                return;
+            }
+            sendMsg(out, compose404NotFound());
             return;
         }
+        sendMsg(out, compose400BadRequest());
+    }
 
-        final var filePath = Path.of(".", "public", path);
-        final var mimeType = Files.probeContentType(filePath);
+    public String compose200Ok(String mimeType, long length) {
+        return "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: " + mimeType + "\r\n" +
+                "Content-Length: " + length + "\r\n" +
+                "Connection: close\r\n" +
+                "\r\n";
+    }
 
-        // special case for classic
-        if (path.equals("/classic.html")) {
-            final var template = Files.readString(filePath);
-            final var content = template.replace(
-                    "{time}",
-                    LocalDateTime.now().toString()
-            ).getBytes();
-            out.write((
-                    "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: " + mimeType + "\r\n" +
-                            "Content-Length: " + content.length + "\r\n" +
-                            "Connection: close\r\n" +
-                            "\r\n"
-            ).getBytes());
-            out.write(content);
-            out.flush();
-            return;
-        }
+    private String compose404NotFound() {
+        return "HTTP/1.1 404 Not Found\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n" +
+                "\r\n";
+    }
 
-        final var length = Files.size(filePath);
-        out.write((
-                "HTTP/1.1 200 OK\r\n" +
-                        "Content-Type: " + mimeType + "\r\n" +
-                        "Content-Length: " + length + "\r\n" +
-                        "Connection: close\r\n" +
-                        "\r\n"
-        ).getBytes());
-        Files.copy(filePath, out);
+    private String compose400BadRequest() {
+        return "HTTP/1.1 400 Bad Request\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n" +
+                "\r\n";
+    }
+
+    private void sendMsg(BufferedOutputStream out, String msg) throws IOException {
+        out.write(msg.getBytes());
         out.flush();
+    }
+
+    // Тестовая функция, для вывода в консоль текущего списка обработчиков
+    public void showHandlers() {
+        for (Map.Entry<String, ConcurrentHashMap<String, Handler>> entry1 : handlers.entrySet()) {
+            String method = entry1.getKey();
+            System.out.println("\nДля метода " + method + ":");
+
+            for (Map.Entry<String, Handler> entry2 : entry1.getValue().entrySet()) {
+                String path = entry2.getKey();
+                Handler handler = entry2.getValue();
+                System.out.println("Путь: " + path + ", обработчик: " + handler.toString());
+            }
+        }
     }
 }
