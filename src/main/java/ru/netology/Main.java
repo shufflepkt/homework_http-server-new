@@ -44,7 +44,7 @@ public class Main {
             out.flush();
         }));
 
-        server.addHandler("POST", "/messages", ((request, responseStream) -> {
+        server.addHandler("POST", "/messages", ((request, out) -> {
             // TODO: handlers code
         }));
 
